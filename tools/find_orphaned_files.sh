@@ -62,15 +62,52 @@ to_lower() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# System services and apps that should never be flagged as orphaned
+is_system_service() {
+    local item_name=$1
+    local item_lower=$(to_lower "$item_name")
+
+    # macOS system apps and services
+    local system_items=(
+        "mail" "music" "tv" "podcasts" "books" "news" "stocks" "maps"
+        "facetime" "messages" "calendar" "contacts" "reminders" "notes"
+        "photos" "preview" "safari" "finder" "dock" "controlcenter"
+        "app store" "system preferences" "system settings"
+        "automator" "quicktime" "calculator" "textedit" "terminal"
+        "disk utility" "activity monitor" "console" "keychain access"
+        "addressbook" "clouddocs" "fileprovider" "knowledge"
+        "differentialprivacy" "callhistory" "screenshots" "diskimages"
+        "configurationprofiles" "syncservices" "crashreporter"
+        "temp" "teams" "openai" "datarecords" "datadumps"
+    )
+
+    for system_item in "${system_items[@]}"; do
+        if [[ "$item_lower" == "$system_item" ]] || [[ "$item_lower" == *"$system_item"* ]]; then
+            return 0
+        fi
+    done
+
+    # System bundle IDs
+    if [[ "$item_name" == "com.apple"* ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
 # Function to check if a folder/file belongs to an installed app
 # OPTIMIZED: Check most common cases first
 is_installed() {
     local item_name=$1
     local item_path=$2
 
+    # OPTIMIZATION: Fast path - check system services first
+    if is_system_service "$item_name"; then
+        return 0
+    fi
+
     # OPTIMIZATION: Fast path - check system folders first (most common skip)
-    if [[ "$item_name" == "com.apple"* ]] || \
-       [[ "$item_name" == "ByHost" ]] || \
+    if [[ "$item_name" == "ByHost" ]] || \
        [[ "$item_name" == "MobileSync" ]] || \
        [[ "$item_name" == "Group Containers" ]] || \
        [[ "$item_name" == "Containers" ]]; then
@@ -99,6 +136,16 @@ is_installed() {
         # Direct match (most common)
         if [[ "$item_lower" == "$app_lower" ]] || [[ "$item_lower" == "${app_lower}.app" ]]; then
             return 0
+        fi
+
+        # Fuzzy matching for common variations
+        # "Google" matches "Google Chrome", "Microsoft" matches "Microsoft Office", etc.
+        if [[ "$item_lower" == *"$app_lower"* ]] || [[ "$app_lower" == *"$item_lower"* ]]; then
+            # Additional check: make sure it's a meaningful match
+            # Skip if item is too short (like "Mail" matching "Mail.app" is fine, but "Go" matching "Google" is not)
+            if [[ ${#item_lower} -ge 3 ]] && [[ ${#app_lower} -ge 3 ]]; then
+                return 0
+            fi
         fi
     done
 
@@ -191,6 +238,11 @@ scan_directory() {
         [[ -d "$item" ]] && item_type="directory"
 
         # OPTIMIZATION: Fast path - check exact name match first (most common case)
+        # Check if it's a system service (skip these)
+        if is_system_service "$item_name"; then
+            continue
+        fi
+
         # Quick check: skip if it belongs to an installed app (fast path)
         if is_installed "$item_name" "$item"; then
             continue
@@ -224,9 +276,13 @@ scan_directory() {
                 if [[ $check_count -gt $max_checks ]]; then
                     break
                 fi
+                # Improved fuzzy matching with minimum length check
                 if [[ "$normalized_item" == *"$norm_app"* ]] || [[ "$norm_app" == *"$normalized_item"* ]]; then
-                    matched=true
-                    break
+                    # Make sure match is meaningful (both parts at least 3 chars)
+                    if [[ ${#normalized_item} -ge 3 ]] && [[ ${#norm_app} -ge 3 ]]; then
+                        matched=true
+                        break
+                    fi
                 fi
             done
 
@@ -329,7 +385,7 @@ if [[ -d "$HOME/Library/Containers" ]]; then
                 container_size_kb=$(du -sk "$container" 2>/dev/null | awk '{print $1}' || echo "0")
                 if [[ $container_size_kb -gt 1024 ]]; then
                     container_size_mb=$((container_size_kb / 1024))
-                    orphaned_items+=("Containers|$container_name|$container|$container_size_kb|directory")
+                    orphaned_items+=("Containers|$container_name|$container|$container_size_kb|$container_size_mb|directory")
                     total_orphaned_size=$((total_orphaned_size + container_size_kb))
                 fi
             fi
@@ -410,36 +466,39 @@ echo ""
 # Group by location (bash 3.2 compatible - using arrays instead of associative arrays)
 locations_list=()
 for item in "${sorted_items[@]}"; do
-    IFS='|' read -r location name path size_kb type <<< "$item"
+    IFS='|' read -r location name path size_kb size_mb type <<< "$item"
     # Check if location is already in list
     found=false
-    for loc in "${locations_list[@]}"; do
-        if [[ "$loc" == "$location" ]]; then
-            found=true
-            break
-        fi
-    done
+    if [[ ${#locations_list[@]} -gt 0 ]]; then
+        for loc in "${locations_list[@]}"; do
+            if [[ "$loc" == "$location" ]]; then
+                found=true
+                break
+            fi
+        done
+    fi
     if [[ "$found" == "false" ]]; then
         locations_list+=("$location")
     fi
 done
 
 # Display items grouped by location
-for location in "${locations_list[@]}"; do
-    echo "--- $location ---"
-    for item in "${sorted_items[@]}"; do
-        IFS='|' read -r loc name path size_kb type <<< "$item"
-        if [[ "$loc" == "$location" ]]; then
-            size_mb=$((size_kb / 1024))
-            if [[ $size_mb -gt 0 ]]; then
-                printf "  %-50s %6sMB  [%s]\n" "$name" "$size_mb" "$type"
-            else
-                printf "  %-50s %6s   [%s]\n" "$name" "<1MB" "$type"
+if [[ ${#locations_list[@]} -gt 0 ]]; then
+    for location in "${locations_list[@]}"; do
+        echo "--- $location ---"
+        for item in "${sorted_items[@]}"; do
+            IFS='|' read -r loc name path size_kb size_mb type <<< "$item"
+            if [[ "$loc" == "$location" ]]; then
+                if [[ $size_mb -gt 0 ]]; then
+                    printf "  %-50s %6sMB  [%s]\n" "$name" "$size_mb" "$type"
+                else
+                    printf "  %-50s %6s   [%s]\n" "$name" "<1MB" "$type"
+                fi
             fi
-        fi
+        done
+        echo ""
     done
-    echo ""
-done
+fi
 
 # Show largest items
 echo "=========================================="
