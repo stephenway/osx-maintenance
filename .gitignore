@@ -1,0 +1,11 @@
+# Logs
+*.log
+maintenance.log
+cron.log
+
+# Temporary files
+*.tmp
+.DS_Store
+
+# Configuration overrides (keep template)
+config.local.conf
