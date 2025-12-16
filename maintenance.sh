@@ -83,6 +83,7 @@ show_menu() {
     echo "6.  Filesystem & Volume Repair"
     echo "7.  System Performance Report"
     echo "8.  Disk Space Analysis"
+    echo "8a. Disk Space Report (What Can Be Freed)"
     echo "9.  Startup Items Management"
     echo "10. Network Diagnostics"
     echo "11. System Update Check"
@@ -178,6 +179,12 @@ main() {
                 ;;
             8)
                 run_tool "disk_analysis"
+                echo ""
+                echo "Press Enter to continue..."
+                read -r
+                ;;
+            8a|8A)
+                run_tool "disk_space_report"
                 echo ""
                 echo "Press Enter to continue..."
                 read -r
